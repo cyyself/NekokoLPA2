@@ -19,6 +19,7 @@ void main() {
       '9esim00000184',
       ' 9ESIM49535343 ',
       'TES-BT-00000184',
+      'OESIM-BT-0A1B2C3D',
     ]) {
       expect(
         BleAdapterType.fromDeviceNames(displayName: name, advertisedName: ''),
@@ -41,6 +42,22 @@ void main() {
       ),
       BleAdapterType.nineEsim,
     );
+  });
+
+  test('every Tianyu name family survives the native keyword scan filter', () {
+    // Android and iOS drop advertisements whose name contains no scan keyword,
+    // so a name family missing here never reaches the reader list.
+    for (final name in [
+      'SCT-BT-00000184',
+      'TES-BT-00000184',
+      'OESIM-BT-0A1B2C3D',
+    ]) {
+      expect(
+        TyBlePlugin.kind.scanKeywords.any(name.contains),
+        isTrue,
+        reason: name,
+      );
+    }
   });
 
   test('B0 Plus advertisement takes precedence over a cached 9eSIM name', () {

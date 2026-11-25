@@ -112,6 +112,7 @@ void main() {
       expect(filters.map((filter) => filter['nameSubstring']), [
         'SCT-BT',
         'TES-BT',
+        'OESIM-BT',
         '9eSIM',
       ]);
       expect(
