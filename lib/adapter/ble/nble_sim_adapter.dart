@@ -17,6 +17,19 @@ import '../../main.dart'; // To get navigatorKey
 import 'ble_adapter.dart';
 import 'ble_transport_utils.dart';
 
+/// Readers that share the NBLE wire protocol -- the E0 3DES challenge and the
+/// counter, APDU and sum16 frames -- but not its device commands.
+enum NBLESimVariant {
+  /// 9eSIM and GlocalMe writers: the FE0C/FE0D mode commands and the
+  /// rename/password APDUs behind the Customize action.
+  nineEsim,
+
+  /// Xesim's X7 card (`Xesim` followed by six digits). Its vendor app sends no
+  /// device commands, numbers APDUs from 2 and keeps message number 0 for its
+  /// heartbeat, so this variant does the same.
+  xesim,
+}
+
 class NBLESimAdapter extends BaseAdapter implements BleAdapter {
   static final Logger _log = Logger('NBLESimAdapter');
   static const int _nativeFrameWriteSize = 101;
@@ -27,7 +40,20 @@ class NBLESimAdapter extends BaseAdapter implements BleAdapter {
   static final Logger _apduTrace = Logger('ApduTrace');
   static const String storedPasswordKeyPrefix = 'nble_sim_password_';
 
-  NBLESimAdapter() : super(_log);
+  NBLESimAdapter({this.variant = NBLESimVariant.nineEsim}) : super(_log);
+
+  final NBLESimVariant variant;
+
+  bool get _hasDeviceCommands => variant == NBLESimVariant.nineEsim;
+
+  /// The counter of the first APDU after a handshake.
+  int get _firstCounter => variant == NBLESimVariant.xesim ? 2 : 0;
+
+  int _counterAfter(int counter) {
+    final next = (counter + 1) & 0xFF;
+    // Xesim's heartbeat owns message number 0.
+    return next == 0 && variant == NBLESimVariant.xesim ? 1 : next;
+  }
 
   static String storedPasswordKey(String deviceName) =>
       '$storedPasswordKeyPrefix${deviceName.trim()}';
@@ -357,9 +383,10 @@ class NBLESimAdapter extends BaseAdapter implements BleAdapter {
             }
           }
 
-          // 3. Mode verification and auto-switch
+          // 3. Mode verification and auto-switch. A reader without the
+          // FE0D/FE0C commands is always in eUICC mode.
           reportConnectStep(ReaderConnectStep.initializing);
-          final currentMode = await getDeviceMode();
+          final currentMode = _hasDeviceCommands ? await getDeviceMode() : 2;
           _ensureConnectActive(handshakeGeneration);
           final refreshing =
               refreshingUntil != null &&
@@ -489,6 +516,8 @@ class NBLESimAdapter extends BaseAdapter implements BleAdapter {
 
   @override
   List<AdapterAction> get extraActions {
+    // The Customize dialog sends 9eSIM's rename/password APDUs.
+    if (!_hasDeviceCommands) return const [];
     return [
       AdapterAction(
         icon: Icons.edit_note_rounded,
@@ -817,6 +846,7 @@ class NBLESimAdapter extends BaseAdapter implements BleAdapter {
 
   @override
   Future<bool?> isServingProfile() async {
+    if (!_hasDeviceCommands) return null;
     try {
       final mode = await getDeviceMode();
       if (mode == 0) return null;
@@ -951,7 +981,7 @@ class NBLESimAdapter extends BaseAdapter implements BleAdapter {
       );
     }
     _log.info("Handshake successful");
-    _nextCounter = 0;
+    _nextCounter = _firstCounter;
     _resetIdleTimer();
   }
 
@@ -1026,7 +1056,7 @@ class NBLESimAdapter extends BaseAdapter implements BleAdapter {
       _rxFailure = null;
 
       final counter = _nextCounter;
-      _nextCounter = (_nextCounter + 1) & 0xFF;
+      _nextCounter = _counterAfter(_nextCounter);
 
       // Web Bluetooth writes are capped at 20 bytes by writeBleChunks. Keep
       // each NBLE protocol frame within that write so its header, counter and
@@ -1222,7 +1252,11 @@ class NBLESimAdapter extends BaseAdapter implements BleAdapter {
     if (refreshingUntil != null && DateTime.now().isBefore(refreshingUntil!)) {
       return;
     }
-    _idleTimer = Timer(const Duration(seconds: 12), _sendIdlePing);
+    // The Xesim app sends its heartbeat after 10 s of quiet.
+    _idleTimer = Timer(
+      Duration(seconds: variant == NBLESimVariant.xesim ? 10 : 12),
+      _sendIdlePing,
+    );
   }
 
   Future<void> _sendIdlePing() async {
